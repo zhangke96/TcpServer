@@ -3,19 +3,19 @@ dist: xenial
 language: cpp
 
 matrix:
-	include:
-		- os: linux
-			addons:
-				apt:
-					sources:
-						- ubuntu-toolchain-r-test
-						- george-edison55-precise-backports
-					packages:
-						- g++-7
-						- cmake-data
-						- cmake
-			evn:
-				- MARTIX_EVAL="CC=gcc-7 && CXX=g++-7"
+  include:
+    - os: linux
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test
+			- george-edison55-precise-backports
+		  packages:
+		    - g++-7
+			- cmake-data
+			- cmake
+	  evn:
+	    - MARTIX_EVAL="CC=gcc-7 && CXX=g++-7"
 
 script:
-	cd TcpServer && cmake CMakeLists.txt && make
+  cd TcpServer && cmake CMakeLists.txt && make
