@@ -1,4 +1,4 @@
-# TcpServer
+# TcpServer [![Build Status](https://travis-ci.com/zhangke96/TcpServer.svg?branch=master)](https://travis-ci.com/zhangke96/TcpServer)
 
 TcpServer only work with [epoll](https://en.wikipedia.org/wiki/Epoll).
 
