@@ -698,7 +698,10 @@ private:
 							else if (number == 0) // 对端关闭了连接，通知调用者
 							{
 								// closeConnection(fd);
-								onPeerShutdownHandler(&(connections[fd]), data);
+								if (onPeerShutdownHandler)
+								{
+									onPeerShutdownHandler(&(connections[fd]), data);
+								}
 							}
 							delete[] buffer;
 						}
