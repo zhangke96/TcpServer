@@ -313,7 +313,7 @@ private:
 		errorString.append(" : ");
 		errorString.append(std::to_string(lineNumber));
 		errorString.append(" : ");
-		errorString.append(strerror_r(errno, errorStr, 256));	// 线程独有的errno忘记了
+		errorString.append(strerror_r(errno, errorStr, 256));	// errno每个线程都有的，线程安全
 	}
 	bool acceptNewConnection()
 	{
