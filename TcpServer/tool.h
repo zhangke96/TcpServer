@@ -24,5 +24,6 @@ class CharStream
 public:
 	virtual ssize_t read(char *, size_t size) = 0;
 	virtual ~CharStream() {}
+	virtual bool end() const = 0;
 };
 #endif

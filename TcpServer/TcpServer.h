@@ -57,13 +57,14 @@ class TcpServer;
 typedef OnConnectOperation (*OnConnectHandle_t)(const Connection*, void *);
 typedef void (*OnReadHandle_t)(const Connection*, const char *, size_t, void *);
 typedef void(*OnPeerShutdownHandle_t)(const Connection *, void *);
+typedef void(*onCanWriteHandle_t)(const Connection*, void *);
 
 class TcpServer
 {
 public:
 	TcpServer() : serverFd(-1), epollFd(-1), 
 		readyForStart(false), onConnectHandler(nullptr),
-		onReadHandler(nullptr), data(nullptr), onPeerShutdownHandler(nullptr)
+		onReadHandler(nullptr), data(nullptr), onPeerShutdownHandler(nullptr), onCanWriteHandler(nullptr)
 	{
 		pipeFds[0] = -1;
 		pipeFds[1] = -1;
@@ -146,6 +147,17 @@ public:
 		else
 		{
 			onPeerShutdownHandler = handler;
+		}
+	}
+	bool onCanWrite(onCanWriteHandle_t handler)
+	{
+		if (onCanWriteHandler)
+		{
+			return false;
+		}
+		else
+		{
+			onCanWriteHandler = handler;
 		}
 	}
 	bool start()
@@ -303,6 +315,7 @@ private:
 	OnConnectHandle_t onConnectHandler;	// TcpServer accept新连接后会回调
 	OnReadHandle_t onReadHandler;		// TcpServer read到数据会回调
 	OnPeerShutdownHandle_t onPeerShutdownHandler;	// 对端Shutdown会回调
+	onCanWriteHandle_t onCanWriteHandler;		// 判断可以写了会回调，上层不能无脑写，否则会导致大量的内存占用
 
 	MutexWrap mutex;
 
@@ -711,6 +724,16 @@ private:
 							{
 								recordError(__FILE__, __LINE__);
 								Log(logger, Logger::LOG_ERROR, errorString);
+							}
+							else
+							{
+                                if (closeWhenWriteFinish.find(connections[fd].fd) == closeWhenWriteFinish.cend())
+								{
+									if (onCanWriteHandler)
+									{
+										onCanWriteHandler(&(connections[fd]), data);
+									}
+								}
 							}
 						}
 					}

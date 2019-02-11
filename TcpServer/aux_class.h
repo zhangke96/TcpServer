@@ -21,7 +21,7 @@ public:
 	{
 		return ::write(*fdsp, buf, size);
 	}
-	int getfd()
+	int getfd() const
 	{
 		return *fdsp;
 	}
