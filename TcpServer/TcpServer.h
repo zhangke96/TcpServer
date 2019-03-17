@@ -21,13 +21,13 @@
 
 #define BUFFER_SIZE (80 * 1024)		// 每次读写的最大大小
 
-struct Connection
+struct TcpConnection
 {
 	int fd;
 	struct sockaddr_in address;
 	struct epoll_event event;
-	friend bool operator< (const Connection &lhs, const Connection &rhs);
-	friend bool operator== (const Connection &lhs, const Connection &rhs);
+	friend bool operator< (const TcpConnection &lhs, const TcpConnection &rhs);
+	friend bool operator== (const TcpConnection &lhs, const TcpConnection &rhs);
 };
 
 struct WriteMeta // 记录要write的信息，有时间改成智能指针 todo
@@ -54,9 +54,9 @@ enum class EpollChangeOperation
 };
 class TcpServer;
 
-typedef OnConnectOperation (*OnConnectHandle_t)(const Connection*, void *);
-typedef void (*OnReadHandle_t)(const Connection*, const char *, size_t, void *);
-typedef void(*OnPeerShutdownHandle_t)(const Connection *, void *);
+typedef OnConnectOperation (*OnConnectHandle_t)(const TcpConnection*, void *);
+typedef void (*OnReadHandle_t)(const TcpConnection*, const char *, size_t, void *);
+typedef void(*OnPeerShutdownHandle_t)(const TcpConnection *, void *);
 
 class TcpServer
 {
@@ -266,7 +266,6 @@ public:
 		{
 			return false;
 		}
-		//toWriteTempStorage.emplace_back(fd, toWrite);
 		for (auto c : toWrite)
 		{
 			toWriteTempStorage.emplace_back(fd, c);
@@ -293,7 +292,7 @@ private:
 	int epollFd;
 	bool readyForStart;
 	std::string errorString;
-	std::map<int, Connection> connections;
+	std::map<int, TcpConnection> connections;
 	std::map<int, std::deque<WriteMeta>> toWriteContents;
 	std::set<int> closeWhenWriteFinish;
 	std::deque<std::pair<int, WriteMeta>> toWriteTempStorage;

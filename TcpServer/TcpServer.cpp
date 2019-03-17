@@ -4,7 +4,7 @@ TcpServer::~TcpServer()
 {
 }
 
-bool operator<(const Connection &lhs, const Connection &rhs)
+bool operator<(const TcpConnection &lhs, const TcpConnection &rhs)
 {
 	return lhs.fd < rhs.fd;
 }
@@ -16,7 +16,7 @@ WriteMeta string2WriteMeta(const std::string &str)
 	return WriteMeta(buf, str.length());
 }
 
-bool operator== (const Connection &lhs, const Connection &rhs)
+bool operator== (const TcpConnection &lhs, const TcpConnection &rhs)
 {
 	return lhs.fd == rhs.fd 
 		&& strncmp((const char *)&(lhs.address), (const char *)&(rhs.address), sizeof(struct sockaddr_in)) == 0;

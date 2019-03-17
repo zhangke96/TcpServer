@@ -7,9 +7,9 @@
 #include <unistd.h>
 using namespace std;
 
-OnConnectOperation connectHandler(const Connection * connection, void *data);	// TcpServer will callback this function when a new connection
-void onReadHandler(const Connection *, const char *, size_t, void *);			// TcpServer will callback when receive new data from client
-void onPeerShutdownHandler(const Connection *, void *);
+OnConnectOperation connectHandler(const TcpConnection * connection, void *data);	// TcpServer will callback this function when a new connection
+void onReadHandler(const TcpConnection *, const char *, size_t, void *);			// TcpServer will callback when receive new data from client
+void onPeerShutdownHandler(const TcpConnection *, void *);
 std::vector < std::pair<int, EpollChangeOperation>> changes;
 TcpServer tcpServer;
 
@@ -36,11 +36,11 @@ int main()
 	t.join();
 }
 
-OnConnectOperation connectHandler(const Connection * connection, void *)
+OnConnectOperation connectHandler(const TcpConnection * connection, void *)
 {
 	return OnConnectOperation::ADD_READ;
 }
-void onReadHandler(const Connection *connect, const char *buffer, size_t size, void *)
+void onReadHandler(const TcpConnection *connect, const char *buffer, size_t size, void *)
 {
 	cout << std::string(buffer, size) << endl;
 	std::string temp = createOk("hello world\n");
@@ -54,7 +54,7 @@ void onReadHandler(const Connection *connect, const char *buffer, size_t size, v
 	changes.clear();
 	tcpServer.notifyCanWrite(connect->fd, toWriteMeta);
 }
-void onPeerShutdownHandler(const Connection *connect, void *)
+void onPeerShutdownHandler(const TcpConnection *connect, void *)
 {
 	std::vector<std::pair<int, EpollChangeOperation>> change{ {connect->fd, EpollChangeOperation::CLOSE_IT} };
 	tcpServer.notifyChangeEpoll(change);
