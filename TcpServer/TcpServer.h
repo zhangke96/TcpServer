@@ -18,6 +18,7 @@
 #include <set>
 #include <thread>
 #include "aux_class.h"
+#include <memory>
 
 #define BUFFER_SIZE (80 * 1024)		// 每次读写的最大大小
 
@@ -32,11 +33,13 @@ struct TcpConnection
 
 struct WriteMeta // 记录要write的信息，有时间改成智能指针 todo
 {
-	const char *buffer;
+	std::shared_ptr<char> sharedData;
+	const char *buffer;	// 交由智能指针管理，不需要自己delete[]
 	int totalLen;
 	int toWriteLen;
-	WriteMeta() : buffer(nullptr), totalLen(0), toWriteLen(0) {}
-	WriteMeta(const char *buf, int len) : buffer(buf), totalLen(len), toWriteLen(len) {}
+	WriteMeta() : sharedData(new char[0], [](char *p) { delete[] p; }), buffer(nullptr), totalLen(0), toWriteLen(0) {}
+	//WriteMeta(const char *buf, int len) : buffer(buf), totalLen(len), toWriteLen(len) {}
+	WriteMeta(std::shared_ptr<char> sourceData, int len) : sharedData(sourceData), buffer(&(*sourceData)), totalLen(len), toWriteLen(len) {}
 };
 
 WriteMeta string2WriteMeta(const std::string &str);
@@ -271,7 +274,7 @@ public:
 		toWriteTempStorage.emplace_back(fd, toWrite);
 		return writePipeToNotify('w');
 	}
-	bool notifyCanWrite(int fd, const std::deque<WriteMeta> &toWrite)
+	bool notifyCanWrite(int fd, const std::vector<WriteMeta>& toWrite)
 	{
 		AutoMutex m(mutex);
 		if (!isVaildConnection(fd))
@@ -305,9 +308,9 @@ private:
 	bool readyForStart;
 	std::string errorString;
 	std::map<int, TcpConnection> connections;
-	std::map<int, std::deque<WriteMeta>> toWriteContents;
+	std::map<int, std::deque<WriteMeta>> toWriteContents;	// 保存需要写的内容
 	std::set<int> closeWhenWriteFinish;
-	std::deque<std::pair<int, WriteMeta>> toWriteTempStorage;
+	std::deque<std::pair<int, WriteMeta>> toWriteTempStorage;	// 调用者暂存需要写的内容，TcpServer会执行复制到toWriteContents
 	std::deque<std::pair<int, EpollChangeOperation>> changesTempStorage;
 	int pipeFds[2]; // 通过管道TcpServer监听调用者的主动活动，可以在epoll_wait阻塞时快速返回处理
 	void *data;	// 保存用户的数据，回调时会传参
@@ -418,13 +421,6 @@ private:
 		auto index = toWriteContents.find(fd);
 		if (index != toWriteContents.end())
 		{
-			for (auto c : index->second)
-			{
-				if (c.buffer)
-				{
-					delete[] c.buffer;
-				}
-			}
 			toWriteContents.erase(fd);
 		}
 		closeWhenWriteFinish.erase(fd);
@@ -592,7 +588,7 @@ private:
 			{
 				if (errno == EAGAIN)
 				{
-					
+					// 这里应该记录下来，直到下一次epoll通知可以写才写 todo 2019年3月17日 22点55分
 				}
 				else
 				{
@@ -610,7 +606,6 @@ private:
 						if (size >= index->toWriteLen)
 						{
 							size -= index->toWriteLen;
-							delete[] index->buffer;
 							toWriteDeque.pop_front();
 							index = toWriteDeque.begin();
 						}
@@ -645,7 +640,15 @@ private:
 		assert(toHandleEvents);
 		for (; ;)
 		{
-			int epollRet = epoll_wait(epollFd, toHandleEvents, 1024, -1);
+			int epollRet = -1;
+			if (toWriteContents.empty())	// 没有需要写的，阻塞等待
+			{
+				epollRet = epoll_wait(epollFd, toHandleEvents, 1024, -1);
+			}
+			else
+			{
+				epollRet = epoll_wait(epollFd, toHandleEvents, 1024, 0);	// 立刻返回，用于write
+			}
 			if (epollRet < 0)
 			{
 				recordError(__FILE__, __LINE__);
@@ -714,25 +717,29 @@ private:
 								{
 									onPeerShutdownHandler(&(connections[fd]), data);
 								}
+								// 删除write队列中的数据
+								toWriteContents.erase(fd);
 							}
 							delete[] buffer;
 						}
-						if (toHandleEvents[i].events & EPOLLOUT)
+					}
+				}
+				// 处理write
+				for (auto c : toWriteContents)
+				{
+					if (!writeContent(c.first))
+					{
+						recordError(__FILE__, __LINE__);
+						Log(logger, Logger::LOG_ERROR, errorString);
+					}
+					else
+					{
+						if (closeWhenWriteFinish.find(c.first) == closeWhenWriteFinish.cend())
 						{
-							if (!writeContent(fd))
+							if (onCanWriteHandler)
 							{
-								recordError(__FILE__, __LINE__);
-								Log(logger, Logger::LOG_ERROR, errorString);
-							}
-							else
-							{
-                                if (closeWhenWriteFinish.find(connections[fd].fd) == closeWhenWriteFinish.cend())
-								{
-									if (onCanWriteHandler)
-									{
-										onCanWriteHandler(&(connections[fd]), data);
-									}
-								}
+								onCanWriteHandler(&(connections[c.first]), data);
+
 							}
 						}
 					}
@@ -788,11 +795,11 @@ private:
 				AutoMutex m(mutex);
 				for (auto c : changesTempStorage)
 				{
-					if (c.second == EpollChangeOperation::ADD_WRITE)
+					/*if (c.second == EpollChangeOperation::ADD_WRITE)
 					{
 						addToWrite(c.first);
-					}
-					else if (c.second == EpollChangeOperation::CLOSE_IF_NO_WRITE)
+					}*/
+					if (c.second == EpollChangeOperation::CLOSE_IF_NO_WRITE)
 					{
 						closeWhenWriteFinish.insert(c.first);
 					}

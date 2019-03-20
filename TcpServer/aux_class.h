@@ -68,6 +68,19 @@ public:
 		}
 		return *this;
 	}
+	int getLength() const
+	{
+		struct stat statinfo;
+		if (fstat(*fdsp, &statinfo) != 0)
+		{
+			Log(logger, Logger::LOG_ERROR, "error when fstat");
+			return -1;
+		}
+		else
+		{
+			return statinfo.st_size;
+		}
+	}
 private:
 	// int fd;
 	std::shared_ptr<int> fdsp;
