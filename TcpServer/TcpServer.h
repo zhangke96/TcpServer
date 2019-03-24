@@ -309,6 +309,7 @@ private:
 	std::string errorString;
 	std::map<int, TcpConnection> connections;
 	std::map<int, std::deque<WriteMeta>> toWriteContents;	// 保存需要写的内容
+	std::map<int, std::deque<WriteMeta>> inActiveWriteContents;	// 保存返回EAGAIN的
 	std::set<int> closeWhenWriteFinish;
 	std::deque<std::pair<int, WriteMeta>> toWriteTempStorage;	// 调用者暂存需要写的内容，TcpServer会执行复制到toWriteContents
 	std::deque<std::pair<int, EpollChangeOperation>> changesTempStorage;
@@ -320,6 +321,13 @@ private:
 	onCanWriteHandle_t onCanWriteHandler;		// 判断可以写了会回调，上层不能无脑写，否则会导致大量的内存占用
 
 	MutexWrap mutex;
+
+	enum class WriteContentResult
+	{
+		DeleteConnection,
+		OK,
+		Move_to_Inactive
+	};
 
 	void recordError(const char * filename, int lineNumber)
 	{
@@ -362,6 +370,7 @@ private:
 					case OnConnectOperation::ADD_READ:
 					{
 						addToRead(clfd);
+						addToWrite(clfd);
 					}
 					break;
 					case OnConnectOperation::ADD_WRITE:
@@ -549,16 +558,15 @@ private:
 		std::cout << "***********************************************" << std::endl;
 	}
 
-	// false需要关闭连接，并且删除一些相关数据
-	bool writeContent(int fd)
+	WriteContentResult writeContent(int fd)
 	{
 		if (toWriteContents.find(fd) == toWriteContents.end())
 		{
-			return true;
+			return WriteContentResult::OK;
 		}
 		else if (toWriteContents[fd].size() == 0)
 		{
-			return true;
+			return WriteContentResult::OK;
 		}
 		else
 		{
@@ -588,15 +596,16 @@ private:
 			delete[] toWriteIovec;
 			if (size == -1)
 			{
-				if (errno == EAGAIN)
+				if (errno == EAGAIN || errno == EWOULDBLOCK)
 				{
 					// 这里应该记录下来，直到下一次epoll通知可以写才写 todo 2019年3月17日 22点55分
+					return WriteContentResult::Move_to_Inactive;
 				}
 				//else if (errno == EPIPE || errno == EBADF || errno == ECONNRESET)
 				else
 				{
 					Log(logger, Logger::LOG_WARN, "error when write");
-					return false;
+					return WriteContentResult::DeleteConnection;
 				}
 			}
 			else // 开始修改Meta数据并且移除写完的Meta
@@ -631,10 +640,10 @@ private:
 				if (closeWhenWriteFinish.find(fd) != closeWhenWriteFinish.end())
 				{
 					//closeConnection(fd);
-					return false;
+					return WriteContentResult::DeleteConnection;
 				}
 			}
-			return true;
+			return WriteContentResult::OK;
 		}
 	}
 
@@ -725,22 +734,39 @@ private:
 								}
 								// 删除write队列中的数据
 								toWriteContents.erase(fd);
+								inActiveWriteContents.erase(fd);
 							}
 							delete[] buffer;
+						}
+						else if (toHandleEvents[i].events & EPOLLOUT)
+						{
+							auto index = inActiveWriteContents.find(fd);
+							if (index != inActiveWriteContents.end())
+							{
+								toWriteContents.insert(*index);
+								inActiveWriteContents.erase(index);
+								onCanWriteHandler(&connections[fd], data);
+							}
 						}
 					}
 				}
 				// 处理write
 				for (auto index = toWriteContents.begin(); index != toWriteContents.end();)
 				{
-					if (!writeContent(index->first))
+					WriteContentResult result = writeContent(index->first);
+					if (result == WriteContentResult::DeleteConnection)
 					{
 						// 关闭连接
 						closeConnection(index->first);
 						// 删除要写的数据
 						index = toWriteContents.erase(index);
 					}
-					else
+					else if (result == WriteContentResult::Move_to_Inactive)
+					{
+						inActiveWriteContents.insert(*index);
+						index = toWriteContents.erase(index);
+					}
+					else if (result == WriteContentResult::OK)
 					{
 						if (closeWhenWriteFinish.find(index->first) == closeWhenWriteFinish.cend())
 						{
@@ -794,8 +820,16 @@ private:
 				{
 					if (connections.find(c.first) == connections.end())
 						continue;
-					auto &writeDeque = toWriteContents[c.first];
-					writeDeque.push_back(c.second);
+					if (inActiveWriteContents.find(c.first) == inActiveWriteContents.end())	// 不在非活动连接中
+					{
+						auto &writeDeque = toWriteContents[c.first];
+						writeDeque.push_back(c.second);
+					}
+					else
+					{
+						auto &writeDeque = inActiveWriteContents[c.first];
+						writeDeque.push_back(c.second);
+					}
 				}
 				toWriteTempStorage.clear();
 			}
