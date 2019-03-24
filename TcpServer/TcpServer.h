@@ -418,11 +418,11 @@ private:
 			return -1;
 		}
 		connections.erase(fd);
-		auto index = toWriteContents.find(fd);
+		/*auto index = toWriteContents.find(fd);
 		if (index != toWriteContents.end())
 		{
 			toWriteContents.erase(fd);
-		}
+		}*/
 		closeWhenWriteFinish.erase(fd);
 		return 0;
 	}
@@ -549,6 +549,7 @@ private:
 		std::cout << "***********************************************" << std::endl;
 	}
 
+	// false需要关闭连接，并且删除一些相关数据
 	bool writeContent(int fd)
 	{
 		if (toWriteContents.find(fd) == toWriteContents.end())
@@ -564,6 +565,7 @@ private:
 			// 使用writev
 			auto &toWriteDeque = toWriteContents[fd];
 			struct iovec *toWriteIovec = new struct iovec[toWriteDeque.size()];
+			assert(toWriteIovec);
 			int remainSize = BUFFER_SIZE;
 			int i = 0;
 			while (remainSize > 0 && i < toWriteDeque.size())
@@ -590,14 +592,15 @@ private:
 				{
 					// 这里应该记录下来，直到下一次epoll通知可以写才写 todo 2019年3月17日 22点55分
 				}
+				//else if (errno == EPIPE || errno == EBADF || errno == ECONNRESET)
 				else
 				{
+					Log(logger, Logger::LOG_WARN, "error when write");
 					return false;
 				}
 			}
 			else // 开始修改Meta数据并且移除写完的Meta
 			{
-				int i = 0;
 				auto index = toWriteDeque.begin();
 				while (size > 0)
 				{
@@ -612,6 +615,7 @@ private:
 						else
 						{
 							index->toWriteLen -= size;
+							size = 0;
 						}
 					}
 					else
@@ -626,7 +630,8 @@ private:
 			{
 				if (closeWhenWriteFinish.find(fd) != closeWhenWriteFinish.end())
 				{
-					closeConnection(fd);
+					//closeConnection(fd);
+					return false;
 				}
 			}
 			return true;
@@ -689,6 +694,7 @@ private:
 						{
 							char *buffer = nullptr;
 							buffer = new char[BUFFER_SIZE];
+							assert(buffer);
 							ssize_t number = -1;
 							while ((number = read(fd, buffer, BUFFER_SIZE)) > 0)
 							{
@@ -725,23 +731,25 @@ private:
 					}
 				}
 				// 处理write
-				for (auto c : toWriteContents)
+				for (auto index = toWriteContents.begin(); index != toWriteContents.end();)
 				{
-					if (!writeContent(c.first))
+					if (!writeContent(index->first))
 					{
-						recordError(__FILE__, __LINE__);
-						Log(logger, Logger::LOG_ERROR, errorString);
+						// 关闭连接
+						closeConnection(index->first);
+						// 删除要写的数据
+						index = toWriteContents.erase(index);
 					}
 					else
 					{
-						if (closeWhenWriteFinish.find(c.first) == closeWhenWriteFinish.cend())
+						if (closeWhenWriteFinish.find(index->first) == closeWhenWriteFinish.cend())
 						{
 							if (onCanWriteHandler)
 							{
-								onCanWriteHandler(&(connections[c.first]), data);
-
+								onCanWriteHandler(&(connections[index->first]), data);
 							}
 						}
+						++index;
 					}
 				}
 			}
@@ -784,6 +792,8 @@ private:
 				//toWriteContents.insert(toWriteContents.end(), toWriteTempStorage)
 				for (auto c : toWriteTempStorage)
 				{
+					if (connections.find(c.first) == connections.end())
+						continue;
 					auto &writeDeque = toWriteContents[c.first];
 					writeDeque.push_back(c.second);
 				}

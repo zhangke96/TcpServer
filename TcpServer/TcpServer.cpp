@@ -12,6 +12,7 @@ bool operator<(const TcpConnection &lhs, const TcpConnection &rhs)
 WriteMeta string2WriteMeta(const std::string &str)
 {
 	char *buf = new char[str.length()];
+	assert(buf);
 	memcpy(buf, str.c_str(), str.length());
 	return WriteMeta(std::shared_ptr<char>(buf, [](char *p) { delete[] p; }), str.length());
 }
