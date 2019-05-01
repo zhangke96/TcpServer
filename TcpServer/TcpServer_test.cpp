@@ -7,22 +7,44 @@
 #include <unistd.h>
 using namespace std;
 
-OnConnectOperation connectHandler(const TcpConnection * connection, void *data);	// TcpServer will callback this function when a new connection
-void onReadHandler(const TcpConnection *, const char *, size_t, void *);			// TcpServer will callback when receive new data from client
-void onPeerShutdownHandler(const TcpConnection *, void *);
 std::vector < std::pair<int, EpollChangeOperation>> changes;
-TcpServer tcpServer;
 
+//typedef OnConnectOperation(*OnConnectHandle_t)(const TcpConnection*, void *);
+//typedef void(*OnReadHandle_t)(const TcpConnection*, const char *, size_t, void *);
+//typedef void(*OnPeerShutdownHandle_t)(const TcpConnection *, void *);
+//typedef void(*OnCanWriteHandle_t)(const TcpConnection*, void *);
+
+void deleter(char* p)
+{
+	delete[] p;
+}
 int main()
 {
+	TcpServer tcpServer;
 	cout << "setAddressPort result: " << boolalpha
 		<< tcpServer.setAddressPort("0.0.0.0", 1234) << endl;
 	cout << "getAddress: " << tcpServer.getAddress() << endl;
 	cout << "getPort: " << tcpServer.getPort() << endl;
 	bool startResult = false;
-	tcpServer.onConnect(connectHandler);
-	tcpServer.onNewData(onReadHandler);
-	tcpServer.onShutdown(onPeerShutdownHandler);
+	tcpServer.onConnect([&tcpServer](const TcpConnection * connection, void* data) -> OnConnectOperation
+		{
+			return OnConnectOperation::ADD_READ;
+		});
+	tcpServer.onNewData([&tcpServer](const TcpConnection * connection, const char* data, size_t size, void*)
+		{
+			if (size == 4 && (strncmp(data, "ping", 4) == 0))
+			{
+				char* respsond = new char[4];
+				memcpy(respsond, "pong", 4);
+				tcpServer.notifyCanWrite(connection->fd, { WriteMeta(std::shared_ptr<char>(respsond, deleter), 4) });
+			}
+			else
+			{
+				tcpServer.notifyChangeEpoll({ {connection->fd, EpollChangeOperation::CLOSE_IT} });
+			}
+		});
+	tcpServer.onShutdown([](const TcpConnection*, void*) {});
+	tcpServer.onCanWrite([](const TcpConnection*, void*) {});
 	startResult = tcpServer.start();
 	if (!startResult)
 	{
@@ -36,27 +58,4 @@ int main()
 	t.join();
 }
 
-OnConnectOperation connectHandler(const TcpConnection * connection, void *)
-{
-	return OnConnectOperation::ADD_READ;
-}
-void onReadHandler(const TcpConnection *connect, const char *buffer, size_t size, void *)
-{
-	cout << std::string(buffer, size) << endl;
-	std::string temp = createOk("hello world\n");
-	char *buf = new char[temp.length()];
-	memcpy(buf, temp.c_str(), temp.length());
-	WriteMeta toWriteMeta(buf, temp.length());
-	//toWrite.emplace_back(connect->fd, toWriteMeta);
-	changes.emplace_back(connect->fd, EpollChangeOperation::ADD_WRITE);
-	//changes.emplace_back(connect->fd, EpollChangeOperation::CLOSE_IF_NO_WRITE);
-	tcpServer.notifyChangeEpoll(changes);
-	changes.clear();
-	tcpServer.notifyCanWrite(connect->fd, toWriteMeta);
-}
-void onPeerShutdownHandler(const TcpConnection *connect, void *)
-{
-	std::vector<std::pair<int, EpollChangeOperation>> change{ {connect->fd, EpollChangeOperation::CLOSE_IT} };
-	tcpServer.notifyChangeEpoll(change);
-}
 #endif // TCP_SERVER_TEST

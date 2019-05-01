@@ -19,6 +19,7 @@
 #include <thread>
 #include "aux_class.h"
 #include <memory>
+#include <functional>
 
 #define BUFFER_SIZE (80 * 1024)		// 每次读写的最大大小
 
@@ -57,10 +58,15 @@ enum class EpollChangeOperation
 };
 class TcpServer;
 
-typedef OnConnectOperation (*OnConnectHandle_t)(const TcpConnection*, void *);
-typedef void (*OnReadHandle_t)(const TcpConnection*, const char *, size_t, void *);
-typedef void(*OnPeerShutdownHandle_t)(const TcpConnection *, void *);
-typedef void(*onCanWriteHandle_t)(const TcpConnection*, void *);
+//typedef OnConnectOperation (*OnConnectHandle_t)(const TcpConnection*, void *);
+//typedef std::function<OnConnectOperation(const TcpConnection*, void*)> OnConnectHandle_t;
+using OnConnectHandle_t = std::function<OnConnectOperation(const TcpConnection*, void*)>;
+//typedef void (*OnReadHandle_t)(const TcpConnection*, const char *, size_t, void *);
+typedef std::function<void(const TcpConnection*, const char *, size_t, void *)> OnReadHandle_t;
+//typedef void(*OnPeerShutdownHandle_t)(const TcpConnection *, void *);
+typedef std::function<void(const TcpConnection *, void *)> OnPeerShutdownHandle_t;
+//typedef void(*OnCanWriteHandle_t)(const TcpConnection*, void *);
+typedef std::function<void(const TcpConnection *, void *)> OnCanWriteHandle_t;
 
 class TcpServer
 {
@@ -152,7 +158,7 @@ public:
 			onPeerShutdownHandler = handler;
 		}
 	}
-	bool onCanWrite(onCanWriteHandle_t handler)
+	bool onCanWrite(OnCanWriteHandle_t handler)
 	{
 		if (onCanWriteHandler)
 		{
@@ -318,7 +324,7 @@ private:
 	OnConnectHandle_t onConnectHandler;	// TcpServer accept新连接后会回调
 	OnReadHandle_t onReadHandler;		// TcpServer read到数据会回调
 	OnPeerShutdownHandle_t onPeerShutdownHandler;	// 对端Shutdown会回调
-	onCanWriteHandle_t onCanWriteHandler;		// 判断可以写了会回调，上层不能无脑写，否则会导致大量的内存占用
+	OnCanWriteHandle_t onCanWriteHandler;		// 判断可以写了会回调，上层不能无脑写，否则会导致大量的内存占用
 
 	MutexWrap mutex;
 
@@ -775,7 +781,14 @@ private:
 								onCanWriteHandler(&(connections[index->first]), data);
 							}
 						}
-						++index;
+						if (index->second.size() == 0)
+						{
+							index = toWriteContents.erase(index);
+						}
+						else
+						{
+							++index;
+						}
 					}
 				}
 			}
