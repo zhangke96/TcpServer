@@ -1,38 +1,37 @@
-#include "log.h"
+// Copyright 2019 zhangke
+#include "TcpServer/log.h"
 
-void Logger::printLog(LogLevel level, const std::string& msg, const char *filename, int linenumber)
-{
-	// Êä³ö¸ñÊ½Îª: time thread_id LEVEL msg filename linenumber
-	// µ±Éè¶¨µÄÈÕÖ¾µÈ¼¶±ÈÏëÒªÊä³öµÄµÈ¼¶¸ß£¬²»»áÊä³öÈÕÖ¾
-	if (displayLevel >= level)
-		return;
-	struct timeval nowtime;
-	gettimeofday(&nowtime, nullptr);
-	struct tm timestruct;
-	struct tm *timep = nullptr;
-	if ((timep = gmtime_r(&(nowtime.tv_sec), &timestruct)) == nullptr)
-	{
-		std::cerr << "error when convernt time" << std::endl; // hope never happen
-	}
-	// format is 20170815 15:06:24.125878 
-	logStream << timep->tm_year + 1900 << ((timep->tm_mon + 1 > 10) ? "" : "0")
-		<< timep->tm_mon + 1 << ((timep->tm_mday > 10) ? "" : "0") << timep->tm_mday
-		<< " " << ((timep->tm_hour > 10) ? "" : "0") << timep->tm_hour
-		<< ":" << ((timep->tm_min > 10) ? "" : "0") << timep->tm_min
-		<< ":" << ((timep->tm_sec > 10) ? "" : "0") << timep->tm_sec
-		<< "." << nowtime.tv_usec << " ";
-	logStream << (unsigned long)pthread_self() << " ";
-	if (level == LOG_DEBUG)
-		logStream << "DEBUG";
-	else if (level == LOG_INFO)
-		logStream << "INFO";
-	else if (level == LOG_WARN)
-		logStream << "WARN";
-	else if (level == LOG_ERROR)
-		logStream << "ERROR";
-	else
-		logStream << "UNRECOGNIZE";
-	logStream << " " << msg << " " << filename << ":" << linenumber << std::endl;
+void Logger::printLog(LogLevel level, const std::string &msg,
+                      const char *filename, int linenumber) {
+  // è¾“å‡ºæ ¼å¼ä¸º: time thread_id LEVEL msg filename linenumber
+  // å½“è®¾å®šçš„æ—¥å¿—ç­‰çº§æ¯”æƒ³è¦è¾“å‡ºçš„ç­‰çº§é«˜ï¼Œä¸ä¼šè¾“å‡ºæ—¥å¿—
+  if (displayLevel >= level) return;
+  struct timeval nowtime;
+  gettimeofday(&nowtime, nullptr);
+  struct tm timestruct;
+  struct tm *timep = nullptr;
+  if ((timep = gmtime_r(&(nowtime.tv_sec), &timestruct)) == nullptr) {
+    std::cerr << "error when convernt time" << std::endl;  // hope never happen
+  }
+  // format is 20170815 15:06:24.125878
+  logStream << timep->tm_year + 1900 << ((timep->tm_mon + 1 > 10) ? "" : "0")
+            << timep->tm_mon + 1 << ((timep->tm_mday > 10) ? "" : "0")
+            << timep->tm_mday << " " << ((timep->tm_hour > 10) ? "" : "0")
+            << timep->tm_hour << ":" << ((timep->tm_min > 10) ? "" : "0")
+            << timep->tm_min << ":" << ((timep->tm_sec > 10) ? "" : "0")
+            << timep->tm_sec << "." << nowtime.tv_usec << " ";
+  logStream << static_cast<uint64_t>(pthread_self()) << " ";
+  if (level == LOG_DEBUG)
+    logStream << "DEBUG";
+  else if (level == LOG_INFO)
+    logStream << "INFO";
+  else if (level == LOG_WARN)
+    logStream << "WARN";
+  else if (level == LOG_ERROR)
+    logStream << "ERROR";
+  else
+    logStream << "UNRECOGNIZE";
+  logStream << " " << msg << " " << filename << ":" << linenumber << std::endl;
 }
 
-Logger logger("log"); // ´´½¨ÈÕÖ¾¶ÔÏó
+Logger logger("log");  // åˆ›å»ºæ—¥å¿—å¯¹è±¡

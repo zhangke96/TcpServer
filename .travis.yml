@@ -18,4 +18,4 @@ matrix:
         - MARTIX_EVAL="CC=gcc-7 && CXX=g++-7"
 
 script:
-  cd TcpServer && cmake CMakeLists.txt && make
+  ./do_cmake.sh && cd build && make

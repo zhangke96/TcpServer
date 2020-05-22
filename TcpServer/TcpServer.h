@@ -1,895 +1,724 @@
+// Copyright 2019 zhangke
 #pragma once
-#include <string>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <string.h>
 #include <errno.h>
-#include <sys/epoll.h>
-#include <unistd.h>
-#include <signal.h>
 #include <fcntl.h>
-#include <cassert>
-#include "log.h"
-#include <map>
-#include <deque>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
 #include <sys/uio.h>
+#include <string.h>
+#include <unistd.h>
+#include <cassert>
+#include <deque>
+#include <functional>
+#include <map>
+#include <memory>
+#include <thread>
+#include <utility>
 #include <vector>
 #include <set>
-#include <thread>
-#include "aux_class.h"
-#include <memory>
-#include <functional>
+#include <string>
+#include "TcpServer/aux_class.h"
+#include "TcpServer/log.h"
 
-#define BUFFER_SIZE (80 * 1024)		// Ã¿´Î¶ÁĞ´µÄ×î´ó´óĞ¡
+#define BUFFER_SIZE (80 * 1024)  // æ¯æ¬¡è¯»å†™çš„æœ€å¤§å¤§å°
 
-struct TcpConnection
-{
-	int fd;
-	struct sockaddr_in address;
-	struct epoll_event event;
-	friend bool operator< (const TcpConnection &lhs, const TcpConnection &rhs);
-	friend bool operator== (const TcpConnection &lhs, const TcpConnection &rhs);
+struct TcpConnection {
+  int fd;
+  struct sockaddr_in address;
+  struct epoll_event event;
+  friend bool operator<(const TcpConnection &lhs, const TcpConnection &rhs);
+  friend bool operator==(const TcpConnection &lhs, const TcpConnection &rhs);
 };
 
-struct WriteMeta // ¼ÇÂ¼ÒªwriteµÄĞÅÏ¢£¬ÓĞÊ±¼ä¸Ä³ÉÖÇÄÜÖ¸Õë todo
-{
-	std::shared_ptr<char> sharedData;
-	const char *buffer;	// ½»ÓÉÖÇÄÜÖ¸Õë¹ÜÀí£¬²»ĞèÒª×Ô¼ºdelete[]
-	int totalLen;
-	int toWriteLen;
-	WriteMeta() : sharedData(new char[0], [](char *p) { delete[] p; }), buffer(nullptr), totalLen(0), toWriteLen(0) {}
-	//WriteMeta(const char *buf, int len) : buffer(buf), totalLen(len), toWriteLen(len) {}
-	WriteMeta(std::shared_ptr<char> sourceData, int len) : sharedData(sourceData), buffer(&(*sourceData)), totalLen(len), toWriteLen(len) {}
+struct WriteMeta  // è®°å½•è¦writeçš„ä¿¡æ¯ï¼Œæœ‰æ—¶é—´æ”¹æˆæ™ºèƒ½æŒ‡é’ˆ todo
+    {
+  std::shared_ptr<char> sharedData;
+  const char *buffer;  // äº¤ç”±æ™ºèƒ½æŒ‡é’ˆç®¡ç†ï¼Œä¸éœ€è¦è‡ªå·±delete[]
+  int totalLen;
+  int toWriteLen;
+  WriteMeta()
+      : sharedData(new char[0], [](char *p) { delete[] p; }),
+        buffer(nullptr),
+        totalLen(0),
+        toWriteLen(0) {}
+  // WriteMeta(const char *buf, int len) : buffer(buf), totalLen(len),
+  // toWriteLen(len) {}
+  WriteMeta(std::shared_ptr<char> sourceData, int len)
+      : sharedData(sourceData),
+        buffer(&(*sourceData)),
+        totalLen(len),
+        toWriteLen(len) {}
 };
 
 WriteMeta string2WriteMeta(const std::string &str);
-enum class OnConnectOperation
-{
-	CLOSE_IT,
-	ADD_READ,
-	ADD_WRITE
-};
-enum class EpollChangeOperation
-{
-	ADD_WRITE,
-	CLOSE_IT,
-	CLOSE_IF_NO_WRITE,
+enum class OnConnectOperation { CLOSE_IT, ADD_READ, ADD_WRITE };
+enum class EpollChangeOperation {
+  ADD_WRITE,
+  CLOSE_IT,
+  CLOSE_IF_NO_WRITE,
 };
 class TcpServer;
 
-//typedef OnConnectOperation (*OnConnectHandle_t)(const TcpConnection*, void *);
-//typedef std::function<OnConnectOperation(const TcpConnection*, void*)> OnConnectHandle_t;
-using OnConnectHandle_t = std::function<OnConnectOperation(const TcpConnection*, void*)>;
-//typedef void (*OnReadHandle_t)(const TcpConnection*, const char *, size_t, void *);
-typedef std::function<void(const TcpConnection*, const char *, size_t, void *)> OnReadHandle_t;
-//typedef void(*OnPeerShutdownHandle_t)(const TcpConnection *, void *);
-typedef std::function<void(const TcpConnection *, void *)> OnPeerShutdownHandle_t;
-//typedef void(*OnCanWriteHandle_t)(const TcpConnection*, void *);
+// typedef OnConnectOperation (*OnConnectHandle_t)(const TcpConnection*, void
+// *);
+// typedef std::function<OnConnectOperation(const TcpConnection*, void*)>
+// OnConnectHandle_t;
+using OnConnectHandle_t =
+    std::function<OnConnectOperation(const TcpConnection *, void *)>;
+// typedef void (*OnReadHandle_t)(const TcpConnection*, const char *, size_t,
+// void *);
+typedef std::function<void(const TcpConnection *, const char *, size_t, void *)>
+    OnReadHandle_t;
+// typedef void(*OnPeerShutdownHandle_t)(const TcpConnection *, void *);
+typedef std::function<void(const TcpConnection *, void *)>
+    OnPeerShutdownHandle_t;
+// typedef void(*OnCanWriteHandle_t)(const TcpConnection*, void *);
 typedef std::function<void(const TcpConnection *, void *)> OnCanWriteHandle_t;
 
-class TcpServer
-{
-public:
-	TcpServer() : serverFd(-1), epollFd(-1), 
-		readyForStart(false), onConnectHandler(nullptr),
-		onReadHandler(nullptr), data(nullptr), onPeerShutdownHandler(nullptr), onCanWriteHandler(nullptr)
-	{
-		pipeFds[0] = -1;
-		pipeFds[1] = -1;
-	}
+class TcpServer {
+ public:
+  TcpServer()
+      : serverFd(-1),
+        epollFd(-1),
+        readyForStart(false),
+        onConnectHandler(nullptr),
+        onReadHandler(nullptr),
+        data(nullptr),
+        onPeerShutdownHandler(nullptr),
+        onCanWriteHandler(nullptr) {
+    pipeFds[0] = -1;
+    pipeFds[1] = -1;
+  }
 
-	~TcpServer();
+  ~TcpServer();
 
-	TcpServer(const TcpServer&) = delete;
-	TcpServer & operator=(const TcpServer&) = delete;
+  TcpServer(const TcpServer &) = delete;
+  TcpServer &operator=(const TcpServer &) = delete;
 
-	bool setAddressPort(const std::string &addr, int port)
-	{
-		struct in_addr tempAddr;
-		if (inet_pton(AF_INET, addr.c_str(), &tempAddr) != 1)
-		{
-			return false;
-		}
-		if (port >= 65535 || port <= 0)
-		{
-			return false;
-		}
-		// ±£´æµ½¶ÔÏóµÄµØÖ·½á¹¹ÖĞ
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(tempAddr.s_addr);
-		address.sin_port = htons(port);
-		readyForStart = true;
-		return true;
-	}
-	void setData(void *newData)
-	{
-		data = newData;
-	}
-	std::string getAddress() const
-	{
-		char buffer[INET_ADDRSTRLEN];
-		in_addr_t addr = ntohl(address.sin_addr.s_addr);
-		if (inet_ntop(AF_INET, &addr, buffer, INET_ADDRSTRLEN) == NULL)
-		{
-			return "";
-		}
-		else
-		{
-			return buffer;
-		}
-	}
-	int getPort() const
-	{
-		return ntohs(address.sin_port);
-	}
-	bool onConnect(OnConnectHandle_t handler)
-	{
-		if (onConnectHandler)
-		{
-			return false;
-		}
-		else
-		{
-			onConnectHandler = handler;
-		}
-		return true;
-	}
-	bool onNewData(OnReadHandle_t handler)
-	{
-		if (onReadHandler)
-		{
-			return false;
-		}
-		else
-		{
-			onReadHandler = handler;
-		}
-		return true;
-	}
-	bool onShutdown(OnPeerShutdownHandle_t handler)
-	{
-		if (onPeerShutdownHandler)
-		{
-			return false;
-		}
-		else
-		{
-			onPeerShutdownHandler = handler;
-		}
-	}
-	bool onCanWrite(OnCanWriteHandle_t handler)
-	{
-		if (onCanWriteHandler)
-		{
-			return false;
-		}
-		else
-		{
-			onCanWriteHandler = handler;
-		}
-	}
-	bool start()
-	{
-		if (!readyForStart)
-		{
-			return false;
-		}
-		if (!ignoreSignal())	// ºöÂÔSIG_PIPE
-		{
-			return false;
-		}
-		int reuse = 1;
-		if ((serverFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(int)) < 0)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if (!setNoBlock(serverFd))
-		{
-			return false;
-		}
-		if (bind(serverFd, (sockaddr *)&address, sizeof(address)) < 0)  /* bind socket fd to address addr */
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if (listen(serverFd, 1024) < 0)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if ((epollFd = epoll_create1(0)) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			close(serverFd);
-			return false;
-		}
-		struct epoll_event event;
-		event.events = EPOLLIN;
-		event.data.fd = serverFd;
-		if (epoll_ctl(epollFd, EPOLL_CTL_ADD, serverFd, &event) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			close(serverFd);
-			close(epollFd);
-			return false;
-		}
-		if (pipe(pipeFds) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			close(serverFd);
-			close(epollFd);
-			return false;
-		}
-		if (!setNoBlock(pipeFds[0]))
-		{
-			recordError(__FILE__, __LINE__);
-			close(serverFd);
-			close(epollFd);
-			close(pipeFds[0]);
-			close(pipeFds[1]);
-			return false;
-		}
-		if (!setNoBlock(pipeFds[1]))
-		{
-			recordError(__FILE__, __LINE__);
-			close(serverFd);
-			close(epollFd);
-			close(pipeFds[0]);
-			close(pipeFds[1]);
-			return false;
-		}
-		event.data.fd = pipeFds[0];
-		if (epoll_ctl(epollFd, EPOLL_CTL_ADD, pipeFds[0], &event) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			close(serverFd);
-			close(epollFd);
-			return false;
-		}
-		return true;
-	}
-	// bool stop(); // ²»ÊÇºÜºÃÊµÏÖ£¬ÏÈ²»ÊµÏÖ
+  bool setAddressPort(const std::string &addr, int port) {
+    struct in_addr tempAddr;
+    if (inet_pton(AF_INET, addr.c_str(), &tempAddr) != 1) {
+      return false;
+    }
+    if (port >= 65535 || port <= 0) {
+      return false;
+    }
+    // ä¿å­˜åˆ°å¯¹è±¡çš„åœ°å€ç»“æ„ä¸­
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(tempAddr.s_addr);
+    address.sin_port = htons(port);
+    readyForStart = true;
+    return true;
+  }
+  void setData(void *newData) { data = newData; }
+  std::string getAddress() const {
+    char buffer[INET_ADDRSTRLEN];
+    in_addr_t addr = ntohl(address.sin_addr.s_addr);
+    if (inet_ntop(AF_INET, &addr, buffer, INET_ADDRSTRLEN) == NULL) {
+      return "";
+    } else {
+      return buffer;
+    }
+  }
+  int getPort() const { return ntohs(address.sin_port); }
+  bool onConnect(OnConnectHandle_t handler) {
+    if (onConnectHandler) {
+      return false;
+    } else {
+      onConnectHandler = handler;
+    }
+    return true;
+  }
+  bool onNewData(OnReadHandle_t handler) {
+    if (onReadHandler) {
+      return false;
+    } else {
+      onReadHandler = handler;
+    }
+    return true;
+  }
+  bool onShutdown(OnPeerShutdownHandle_t handler) {
+    if (onPeerShutdownHandler) {
+      return false;
+    } else {
+      onPeerShutdownHandler = handler;
+    }
+  }
+  bool onCanWrite(OnCanWriteHandle_t handler) {
+    if (onCanWriteHandler) {
+      return false;
+    } else {
+      onCanWriteHandler = handler;
+    }
+  }
+  bool start() {
+    if (!readyForStart) {
+      return false;
+    }
+    if (!ignoreSignal()) {  // å¿½ç•¥SIG_PIPE
+      return false;
+    }
+    int reuse = 1;
+    if ((serverFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(int)) <
+        0) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if (!setNoBlock(serverFd)) {
+      return false;
+    }
+    if (bind(serverFd, reinterpret_cast<sockaddr *>(&address),
+             sizeof(address)) < 0) { /* bind socket fd to address addr */
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if (listen(serverFd, 1024) < 0) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if ((epollFd = epoll_create1(0)) == -1) {
+      recordError(__FILE__, __LINE__);
+      close(serverFd);
+      return false;
+    }
+    struct epoll_event event;
+    event.events = EPOLLIN;
+    event.data.fd = serverFd;
+    if (epoll_ctl(epollFd, EPOLL_CTL_ADD, serverFd, &event) == -1) {
+      recordError(__FILE__, __LINE__);
+      close(serverFd);
+      close(epollFd);
+      return false;
+    }
+    if (pipe(pipeFds) == -1) {
+      recordError(__FILE__, __LINE__);
+      close(serverFd);
+      close(epollFd);
+      return false;
+    }
+    if (!setNoBlock(pipeFds[0])) {
+      recordError(__FILE__, __LINE__);
+      close(serverFd);
+      close(epollFd);
+      close(pipeFds[0]);
+      close(pipeFds[1]);
+      return false;
+    }
+    if (!setNoBlock(pipeFds[1])) {
+      recordError(__FILE__, __LINE__);
+      close(serverFd);
+      close(epollFd);
+      close(pipeFds[0]);
+      close(pipeFds[1]);
+      return false;
+    }
+    event.data.fd = pipeFds[0];
+    if (epoll_ctl(epollFd, EPOLL_CTL_ADD, pipeFds[0], &event) == -1) {
+      recordError(__FILE__, __LINE__);
+      close(serverFd);
+      close(epollFd);
+      return false;
+    }
+    return true;
+  }
+  // bool stop(); // ä¸æ˜¯å¾ˆå¥½å®ç°ï¼Œå…ˆä¸å®ç°
 
-	std::thread runServer(bool ifDetach = true)
-	{
-		std::thread workThread(&TcpServer::daemonRun, this);
-		if (ifDetach)
-		{
-			workThread.detach();
-		}
-		return std::move(workThread);
-	}
-	std::string getError() const
-	{
-		return errorString;
-	}
-	bool notifyCanWrite(int fd, const WriteMeta &toWrite)
-	{
-		AutoMutex m(mutex);
-		if (!isVaildConnection(fd))
-		{
-			return false;
-		}
-		toWriteTempStorage.emplace_back(fd, toWrite);
-		return writePipeToNotify('w');
-	}
-	bool notifyCanWrite(int fd, const std::vector<WriteMeta>& toWrite)
-	{
-		AutoMutex m(mutex);
-		if (!isVaildConnection(fd))
-		{
-			return false;
-		}
-		for (auto c : toWrite)
-		{
-			toWriteTempStorage.emplace_back(fd, c);
-		}
-		return writePipeToNotify('w');
-	}
-	bool notifyChangeEpoll(const std::vector<std::pair<int, EpollChangeOperation>> &changes)
-	{
-		AutoMutex m(mutex);
-		for (auto c : changes)
-		{
-			if (!isVaildConnection(c.first))
-			{
-				return false;
-			}
-		}
-		changesTempStorage.insert(changesTempStorage.end(), changes.begin(), changes.end());
-		return writePipeToNotify('c');
-	}
-private:
-	struct sockaddr_in address;
+  std::thread runServer(bool ifDetach = true) {
+    std::thread workThread(&TcpServer::daemonRun, this);
+    if (ifDetach) {
+      workThread.detach();
+    }
+    return std::move(workThread);
+  }
+  std::string getError() const { return errorString; }
+  bool notifyCanWrite(int fd, const WriteMeta &toWrite) {
+    AutoMutex m(mutex);
+    if (!isVaildConnection(fd)) {
+      return false;
+    }
+    toWriteTempStorage.emplace_back(fd, toWrite);
+    return writePipeToNotify('w');
+  }
+  bool notifyCanWrite(int fd, const std::vector<WriteMeta> &toWrite) {
+    AutoMutex m(mutex);
+    if (!isVaildConnection(fd)) {
+      return false;
+    }
+    for (auto c : toWrite) {
+      toWriteTempStorage.emplace_back(fd, c);
+    }
+    return writePipeToNotify('w');
+  }
+  bool notifyChangeEpoll(
+      const std::vector<std::pair<int, EpollChangeOperation>> &changes) {
+    AutoMutex m(mutex);
+    for (auto c : changes) {
+      if (!isVaildConnection(c.first)) {
+        return false;
+      }
+    }
+    changesTempStorage.insert(changesTempStorage.end(), changes.begin(),
+                              changes.end());
+    return writePipeToNotify('c');
+  }
 
-	int serverFd;
-	int epollFd;
-	bool readyForStart;
-	std::string errorString;
-	std::map<int, TcpConnection> connections;
-	std::map<int, std::deque<WriteMeta>> toWriteContents;	// ±£´æĞèÒªĞ´µÄÄÚÈİ
-	std::map<int, std::deque<WriteMeta>> inActiveWriteContents;	// ±£´æ·µ»ØEAGAINµÄ
-	std::set<int> closeWhenWriteFinish;
-	std::deque<std::pair<int, WriteMeta>> toWriteTempStorage;	// µ÷ÓÃÕßÔİ´æĞèÒªĞ´µÄÄÚÈİ£¬TcpServer»áÖ´ĞĞ¸´ÖÆµ½toWriteContents
-	std::deque<std::pair<int, EpollChangeOperation>> changesTempStorage;
-	int pipeFds[2]; // Í¨¹ı¹ÜµÀTcpServer¼àÌıµ÷ÓÃÕßµÄÖ÷¶¯»î¶¯£¬¿ÉÒÔÔÚepoll_wait×èÈûÊ±¿ìËÙ·µ»Ø´¦Àí
-	void *data;	// ±£´æÓÃ»§µÄÊı¾İ£¬»Øµ÷Ê±»á´«²Î
-	OnConnectHandle_t onConnectHandler;	// TcpServer acceptĞÂÁ¬½Óºó»á»Øµ÷
-	OnReadHandle_t onReadHandler;		// TcpServer readµ½Êı¾İ»á»Øµ÷
-	OnPeerShutdownHandle_t onPeerShutdownHandler;	// ¶Ô¶ËShutdown»á»Øµ÷
-	OnCanWriteHandle_t onCanWriteHandler;		// ÅĞ¶Ï¿ÉÒÔĞ´ÁË»á»Øµ÷£¬ÉÏ²ã²»ÄÜÎŞÄÔĞ´£¬·ñÔò»áµ¼ÖÂ´óÁ¿µÄÄÚ´æÕ¼ÓÃ
+ private:
+  struct sockaddr_in address;
 
-	MutexWrap mutex;
+  int serverFd;
+  int epollFd;
+  bool readyForStart;
+  std::string errorString;
+  std::map<int, TcpConnection> connections;
+  std::map<int, std::deque<WriteMeta>> toWriteContents;  // ä¿å­˜éœ€è¦å†™çš„å†…å®¹
+  std::map<int, std::deque<WriteMeta>>
+      inActiveWriteContents;  // ä¿å­˜è¿”å›EAGAINçš„
+  std::set<int> closeWhenWriteFinish;
+  // è°ƒç”¨è€…æš‚å­˜éœ€è¦å†™çš„å†…å®¹ï¼ŒTcpServerä¼šæ‰§è¡Œå¤åˆ¶åˆ°toWriteContents
+  std::deque<std::pair<int, WriteMeta>> toWriteTempStorage;
+  std::deque<std::pair<int, EpollChangeOperation>> changesTempStorage;
+  // é€šè¿‡ç®¡é“TcpServerç›‘å¬è°ƒç”¨è€…çš„ä¸»åŠ¨æ´»åŠ¨ï¼Œå¯ä»¥åœ¨epoll_waité˜»å¡æ—¶å¿«é€Ÿè¿”å›å¤„ç†
+  int pipeFds[2];
+  void *data;  // ä¿å­˜ç”¨æˆ·çš„æ•°æ®ï¼Œå›è°ƒæ—¶ä¼šä¼ å‚
+  OnConnectHandle_t onConnectHandler;  // TcpServer acceptæ–°è¿æ¥åä¼šå›è°ƒ
+  OnReadHandle_t onReadHandler;        // TcpServer readåˆ°æ•°æ®ä¼šå›è°ƒ
+  OnPeerShutdownHandle_t onPeerShutdownHandler;  // å¯¹ç«¯Shutdownä¼šå›è°ƒ
+  // åˆ¤æ–­å¯ä»¥å†™äº†ä¼šå›è°ƒï¼Œä¸Šå±‚ä¸èƒ½æ— è„‘å†™ï¼Œå¦åˆ™ä¼šå¯¼è‡´å¤§é‡çš„å†…å­˜å ç”¨
+  OnCanWriteHandle_t onCanWriteHandler;
 
-	enum class WriteContentResult
-	{
-		DeleteConnection,
-		OK,
-		Move_to_Inactive
-	};
+  MutexWrap mutex;
 
-	void recordError(const char * filename, int lineNumber)
-	{
-		char errorStr[256];
-		errorString.assign(filename);
-		errorString.append(" : ");
-		errorString.append(std::to_string(lineNumber));
-		errorString.append(" : ");
-		errorString.append(strerror_r(errno, errorStr, 256));	// errnoÃ¿¸öÏß³Ì¶¼ÓĞµÄ£¬Ïß³Ì°²È«
-	}
-	bool acceptNewConnection()
-	{
-		int clfd;
-		struct sockaddr_in clientAddr;
-		socklen_t length = sizeof(clientAddr);
-		while ((clfd = accept(serverFd, (sockaddr *)&clientAddr, &length)) >= 0)
-		{
-			if (!onConnectHandler)
-			{
-				close(clfd);
-				continue;
-			}
-			else
-			{
-				if (!setNoBlock(clfd))
-				{
-					recordError(__FILE__, __LINE__);
-					Log(logger, Logger::LOG_ERROR, errorString);
-				}
-				connections[clfd] = { clfd, clientAddr, {} };
-				addToEpoll(clfd);
-				switch (onConnectHandler(&connections[clfd], data))
-				{
-					// ÉèÖÃEdge triggerÄ£Ê½
-					case OnConnectOperation::CLOSE_IT:
-					{
-						closeConnection(clfd);
-					}
-					break;
-					case OnConnectOperation::ADD_READ:
-					{
-						addToRead(clfd);
-						addToWrite(clfd);
-					}
-					break;
-					case OnConnectOperation::ADD_WRITE:
-					{
-						addToWrite(clfd);
-					}
-					break;
-				}
-			}
-		}
-		if (errno = EAGAIN)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
-		}
-	}
-	// ÉèÖÃÊ¹ÓÃ±ßÔµ´¥·¢µÄepoll£¬ËùÓĞ¿Í»§¶ËÁ¬½Ó¶¼ÊÇÍ¨¹ıÕâ¸öÌí¼ÓµÄ
-	int addToEpoll(int fd)
-	{
-		if (!isVaildConnection(fd))
-		{
-			return 0;
-		}
-		struct epoll_event &event = connections[fd].event;
-		event.events |= EPOLLET;
-		event.data.fd = fd;
-		if (epoll_ctl(epollFd, EPOLL_CTL_ADD, fd, &event) == -1)
-		{
-			return -1;
-		}
-		return 0;
-	}
-	// closeÒ²ĞèÒª¸æËßÉÏ²ã£¬¿ÉÒÔÇø·ÖÖ÷¶¯closeºÍtcpserverÒªclose
-	int closeConnection(int fd)	
-	{
-		// ´ÓepollÖĞÒÆ³ı£¬È»ºó¹Ø±Õ£¬È»ºóÉ¾³ı
-		if (epoll_ctl(epollFd, EPOLL_CTL_DEL, fd, NULL) == -1)
-		{
-			if (errno != ENOENT)
-			{
-				std::cout << strerror(errno) << std::endl;
-				return -1;
-			}
-		}
-		if (shutdown(fd, SHUT_RDWR) < 0)
-		{
-			return -1;
-		}
-		if (close(fd) < 0)
-		{
-			return -1;
-		}
-		connections.erase(fd);
-		/*auto index = toWriteContents.find(fd);
-		if (index != toWriteContents.end())
-		{
-			toWriteContents.erase(fd);
-		}*/
-		closeWhenWriteFinish.erase(fd);
-		return 0;
-	}
-	int addToRead(int fd)
-	{
-		if (!isVaildConnection(fd))
-		{
-			return 0;
-		}
-		auto &event = connections[fd].event;
-		//printEvent(-1, event.events);
-		event.events |= EPOLLIN;
-		event.events |= EPOLLRDHUP;
-		/*************²âÊÔ**************/
-		/*event.events |= EPOLLERR;
-		event.events |= EPOLLPRI;*/
-		/*******************************/
-		event.data.fd = fd;
-		if (epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &event) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			Log(logger, Logger::LOG_ERROR, errorString);
-			return -1;
-		}
-		return 0;
-	}
-	int addToWrite(int fd)
-	{
-		if (!isVaildConnection(fd))
-		{
-			return 0;
-		}
-		auto &event = connections[fd].event;
-		//printEvent(-1, event.events);
-		event.events |= EPOLLOUT;
-		event.data.fd = fd;
-		if (epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &event) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			Log(logger, Logger::LOG_ERROR, errorString);
-			return -1;
-		}
-		return 0;
-	}
-	/*
-* ºöÂÔSIGPIPEĞÅºÅ
-* Èç¹ûÏòÒ»¸öÒÑ¾­¹Ø±ÕµÄsocketĞ´»áÓĞÕâ¸öĞÅºÅ
-* »òÕßÊÇÒ»¸öÊÕµ½ÁËRSTµÄsocket£¬ÔÙĞ´»áÊÕµ½Õâ¸öĞÅºÅ
-* write»á·µ»ØEPIPE
+  enum class WriteContentResult { DeleteConnection, OK, Move_to_Inactive };
+
+  void recordError(const char *filename, int lineNumber) {
+    char errorStr[256];
+    errorString.assign(filename);
+    errorString.append(" : ");
+    errorString.append(std::to_string(lineNumber));
+    errorString.append(" : ");
+    errorString.append(
+        strerror_r(errno, errorStr, 256));  // errnoæ¯ä¸ªçº¿ç¨‹éƒ½æœ‰çš„ï¼Œçº¿ç¨‹å®‰å…¨
+  }
+  bool acceptNewConnection() {
+    int clfd;
+    struct sockaddr_in clientAddr;
+    socklen_t length = sizeof(clientAddr);
+    while ((clfd = accept(serverFd, reinterpret_cast<sockaddr *>(&clientAddr),
+                          &length)) >= 0) {
+      if (!onConnectHandler) {
+        close(clfd);
+        continue;
+      } else {
+        if (!setNoBlock(clfd)) {
+          recordError(__FILE__, __LINE__);
+          Log(logger, Logger::LOG_ERROR, errorString);
+        }
+        connections[clfd] = {clfd, clientAddr, {}};
+        addToEpoll(clfd);
+        switch (onConnectHandler(&connections[clfd], data)) {
+          // è®¾ç½®Edge triggeræ¨¡å¼
+          case OnConnectOperation::CLOSE_IT: {
+            closeConnection(clfd);
+          } break;
+          case OnConnectOperation::ADD_READ: {
+            addToRead(clfd);
+            addToWrite(clfd);
+          } break;
+          case OnConnectOperation::ADD_WRITE: {
+            addToWrite(clfd);
+          } break;
+        }
+      }
+    }
+    if (errno = EAGAIN) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+  // è®¾ç½®ä½¿ç”¨è¾¹ç¼˜è§¦å‘çš„epollï¼Œæ‰€æœ‰å®¢æˆ·ç«¯è¿æ¥éƒ½æ˜¯é€šè¿‡è¿™ä¸ªæ·»åŠ çš„
+  int addToEpoll(int fd) {
+    if (!isVaildConnection(fd)) {
+      return 0;
+    }
+    struct epoll_event &event = connections[fd].event;
+    event.events |= EPOLLET;
+    event.data.fd = fd;
+    if (epoll_ctl(epollFd, EPOLL_CTL_ADD, fd, &event) == -1) {
+      return -1;
+    }
+    return 0;
+  }
+  // closeä¹Ÿéœ€è¦å‘Šè¯‰ä¸Šå±‚ï¼Œå¯ä»¥åŒºåˆ†ä¸»åŠ¨closeå’Œtcpserverè¦close
+  int closeConnection(int fd) {
+    // ä»epollä¸­ç§»é™¤ï¼Œç„¶åå…³é—­ï¼Œç„¶ååˆ é™¤
+    if (epoll_ctl(epollFd, EPOLL_CTL_DEL, fd, NULL) == -1) {
+      if (errno != ENOENT) {
+        std::cout << strerror(errno) << std::endl;
+        return -1;
+      }
+    }
+    if (shutdown(fd, SHUT_RDWR) < 0) {
+      return -1;
+    }
+    if (close(fd) < 0) {
+      return -1;
+    }
+    connections.erase(fd);
+    /*auto index = toWriteContents.find(fd);
+    if (index != toWriteContents.end())
+    {
+            toWriteContents.erase(fd);
+    }*/
+    closeWhenWriteFinish.erase(fd);
+    return 0;
+  }
+  int addToRead(int fd) {
+    if (!isVaildConnection(fd)) {
+      return 0;
+    }
+    auto &event = connections[fd].event;
+    // printEvent(-1, event.events);
+    event.events |= EPOLLIN;
+    event.events |= EPOLLRDHUP;
+    /*************æµ‹è¯•**************/
+    /*event.events |= EPOLLERR;
+    event.events |= EPOLLPRI;*/
+    /*******************************/
+    event.data.fd = fd;
+    if (epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &event) == -1) {
+      recordError(__FILE__, __LINE__);
+      Log(logger, Logger::LOG_ERROR, errorString);
+      return -1;
+    }
+    return 0;
+  }
+  int addToWrite(int fd) {
+    if (!isVaildConnection(fd)) {
+      return 0;
+    }
+    auto &event = connections[fd].event;
+    // printEvent(-1, event.events);
+    event.events |= EPOLLOUT;
+    event.data.fd = fd;
+    if (epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &event) == -1) {
+      recordError(__FILE__, __LINE__);
+      Log(logger, Logger::LOG_ERROR, errorString);
+      return -1;
+    }
+    return 0;
+  }
+  /*
+* å¿½ç•¥SIGPIPEä¿¡å·
+* å¦‚æœå‘ä¸€ä¸ªå·²ç»å…³é—­çš„socketå†™ä¼šæœ‰è¿™ä¸ªä¿¡å·
+* æˆ–è€…æ˜¯ä¸€ä¸ªæ”¶åˆ°äº†RSTçš„socketï¼Œå†å†™ä¼šæ”¶åˆ°è¿™ä¸ªä¿¡å·
+* writeä¼šè¿”å›EPIPE
 */
-	bool ignoreSignal()
-	{
-		sigset_t signals;
-		if (sigemptyset(&signals) != 0)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if (sigaddset(&signals, SIGPIPE) != 0)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if (sigprocmask(SIG_BLOCK, &signals, nullptr) != 0)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		return true;
-	}
+  bool ignoreSignal() {
+    sigset_t signals;
+    if (sigemptyset(&signals) != 0) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if (sigaddset(&signals, SIGPIPE) != 0) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if (sigprocmask(SIG_BLOCK, &signals, nullptr) != 0) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    return true;
+  }
 
-	bool setNoBlock(int fd)
-	{
-		int val;
-		if ((val = fcntl(fd, F_GETFL, 0)) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		if ((val = fcntl(fd, F_SETFL, val | O_NONBLOCK)) == -1)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;;
-		}
-		return true;
-	}
+  bool setNoBlock(int fd) {
+    int val;
+    if ((val = fcntl(fd, F_GETFL, 0)) == -1) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    if ((val = fcntl(fd, F_SETFL, val | O_NONBLOCK)) == -1) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    }
+    return true;
+  }
 
-	void printEvent(int fd, uint32_t events)
-	{
-		std::cout << "***********************************************" << std::endl;
-		std::cout << "fd: " << fd << std::endl;
-		if (connections.find(fd) != connections.cend())	// ÓĞ¿ÉÄÜÊÇ·şÎñ¶ËÌ×½Ó×ÖºÍÍ¨Öª¹ÜµÀÌ×½Ó×Ö£¬¾Í²»ÄÜÊä³öµØÖ·ÁË
-		{
-			std::cout << inet_ntoa(connections[fd].address.sin_addr) << " : " << ntohs(connections[fd].address.sin_port) << std::endl;
-		}
-		if (events & EPOLLIN)
-			std::cout << "EPOLLIN" << std::endl;
-		if (events & EPOLLPRI)
-			std::cout << "EPOLLPRI" << std::endl;
-		if (events & EPOLLOUT)
-			std::cout << "EPOLLOUT" << std::endl;
-		if (events & EPOLLRDNORM)
-			std::cout << "EPOLLRDNORM" << std::endl;
-		if (events & EPOLLRDBAND)
-			std::cout << "EPOLLRDBAND" << std::endl;
-		if (events & EPOLLWRNORM)
-			std::cout << "EPOLLWRNORM" << std::endl;
-		if (events & EPOLLWRBAND)
-			std::cout << "EPOLLWRBAND" << std::endl;
-		if (events & EPOLLMSG)
-			std::cout << "EPOLLMSG" << std::endl;
-		if (events & EPOLLERR)
-			std::cout << "EPOLLERR" << std::endl;
-		if (events & EPOLLHUP)
-			std::cout << "EPOLLHUP" << std::endl;
-		if (events & EPOLLRDHUP)
-			std::cout << "EPOLLRDHUP" << std::endl;
-		if (events & EPOLLWAKEUP)
-			std::cout << "EPOLLWAKEUP" << std::endl;
-		if (events & EPOLLONESHOT)
-			std::cout << "EPOLLONESHOT" << std::endl;
-		if (events & EPOLLET)
-			std::cout << "EPOLLET" << std::endl;
-		std::cout << "***********************************************" << std::endl;
-	}
+  void printEvent(int fd, uint32_t events) {
+    std::cout << "***********************************************" << std::endl;
+    std::cout << "fd: " << fd << std::endl;
+    if (connections.find(fd) != connections.cend()) {
+      // æœ‰å¯èƒ½æ˜¯æœåŠ¡ç«¯å¥—æ¥å­—å’Œé€šçŸ¥ç®¡é“å¥—æ¥å­—ï¼Œå°±ä¸èƒ½è¾“å‡ºåœ°å€äº†
+      std::cout << inet_ntoa(connections[fd].address.sin_addr) << " : "
+                << ntohs(connections[fd].address.sin_port) << std::endl;
+    }
+    if (events & EPOLLIN) std::cout << "EPOLLIN" << std::endl;
+    if (events & EPOLLPRI) std::cout << "EPOLLPRI" << std::endl;
+    if (events & EPOLLOUT) std::cout << "EPOLLOUT" << std::endl;
+    if (events & EPOLLRDNORM) std::cout << "EPOLLRDNORM" << std::endl;
+    if (events & EPOLLRDBAND) std::cout << "EPOLLRDBAND" << std::endl;
+    if (events & EPOLLWRNORM) std::cout << "EPOLLWRNORM" << std::endl;
+    if (events & EPOLLWRBAND) std::cout << "EPOLLWRBAND" << std::endl;
+    if (events & EPOLLMSG) std::cout << "EPOLLMSG" << std::endl;
+    if (events & EPOLLERR) std::cout << "EPOLLERR" << std::endl;
+    if (events & EPOLLHUP) std::cout << "EPOLLHUP" << std::endl;
+    if (events & EPOLLRDHUP) std::cout << "EPOLLRDHUP" << std::endl;
+    if (events & EPOLLWAKEUP) std::cout << "EPOLLWAKEUP" << std::endl;
+    if (events & EPOLLONESHOT) std::cout << "EPOLLONESHOT" << std::endl;
+    if (events & EPOLLET) std::cout << "EPOLLET" << std::endl;
+    std::cout << "***********************************************" << std::endl;
+  }
 
-	WriteContentResult writeContent(int fd)
-	{
-		if (toWriteContents.find(fd) == toWriteContents.end())
-		{
-			return WriteContentResult::OK;
-		}
-		else if (toWriteContents[fd].size() == 0)
-		{
-			return WriteContentResult::OK;
-		}
-		else
-		{
-			// Ê¹ÓÃwritev
-			auto &toWriteDeque = toWriteContents[fd];
-			struct iovec *toWriteIovec = new struct iovec[toWriteDeque.size()];
-			assert(toWriteIovec);
-			int remainSize = BUFFER_SIZE;
-			int i = 0;
-			while (remainSize > 0 && i < toWriteDeque.size())
-			{
-				auto const &writeMeta = toWriteDeque[i];
-				toWriteIovec[i].iov_base = (void *)(writeMeta.buffer + writeMeta.totalLen - writeMeta.toWriteLen);
-				if (remainSize >= writeMeta.toWriteLen)
-				{	
-					toWriteIovec[i].iov_len = writeMeta.toWriteLen;
-					remainSize -= writeMeta.toWriteLen;
-				}
-				else
-				{
-					toWriteIovec[i].iov_len = remainSize;
-					remainSize = 0;
-				}
-				++i;
-			}
-			ssize_t size = writev(fd, toWriteIovec, i);
-			delete[] toWriteIovec;
-			if (size == -1)
-			{
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
-				{
-					// ÕâÀïÓ¦¸Ã¼ÇÂ¼ÏÂÀ´£¬Ö±µ½ÏÂÒ»´ÎepollÍ¨Öª¿ÉÒÔĞ´²ÅĞ´ todo 2019Äê3ÔÂ17ÈÕ 22µã55·Ö
-					return WriteContentResult::Move_to_Inactive;
-				}
-				//else if (errno == EPIPE || errno == EBADF || errno == ECONNRESET)
-				else
-				{
-					Log(logger, Logger::LOG_WARN, "error when write");
-					return WriteContentResult::DeleteConnection;
-				}
-			}
-			else // ¿ªÊ¼ĞŞ¸ÄMetaÊı¾İ²¢ÇÒÒÆ³ıĞ´ÍêµÄMeta
-			{
-				auto index = toWriteDeque.begin();
-				while (size > 0)
-				{
-					if (index->toWriteLen > 0)
-					{
-						if (size >= index->toWriteLen)
-						{
-							size -= index->toWriteLen;
-							toWriteDeque.pop_front();
-							index = toWriteDeque.begin();
-						}
-						else
-						{
-							index->toWriteLen -= size;
-							size = 0;
-						}
-					}
-					else
-					{
-						// ²»Ó¦¸ÃÓĞÎÊÌâµÄ
-						Log(logger, Logger::LOG_ERROR, "should not run here");
-						exit(-1);
-					}
-				}
-			}
-			if (toWriteDeque.size() == 0)
-			{
-				if (closeWhenWriteFinish.find(fd) != closeWhenWriteFinish.end())
-				{
-					//closeConnection(fd);
-					return WriteContentResult::DeleteConnection;
-				}
-			}
-			return WriteContentResult::OK;
-		}
-	}
+  WriteContentResult writeContent(int fd) {
+    if (toWriteContents.find(fd) == toWriteContents.end()) {
+      return WriteContentResult::OK;
+    } else if (toWriteContents[fd].size() == 0) {
+      return WriteContentResult::OK;
+    } else {
+      // ä½¿ç”¨writev
+      auto &toWriteDeque = toWriteContents[fd];
+      struct iovec *toWriteIovec = new struct iovec[toWriteDeque.size()];
+      assert(toWriteIovec);
+      int remainSize = BUFFER_SIZE;
+      int i = 0;
+      while (remainSize > 0 && i < toWriteDeque.size()) {
+        auto const &writeMeta = toWriteDeque[i];
+        toWriteIovec[i].iov_base =
+            (void *)(writeMeta.buffer + writeMeta.totalLen -
+                     writeMeta.toWriteLen);
+        if (remainSize >= writeMeta.toWriteLen) {
+          toWriteIovec[i].iov_len = writeMeta.toWriteLen;
+          remainSize -= writeMeta.toWriteLen;
+        } else {
+          toWriteIovec[i].iov_len = remainSize;
+          remainSize = 0;
+        }
+        ++i;
+      }
+      ssize_t size = writev(fd, toWriteIovec, i);
+      delete[] toWriteIovec;
+      if (size == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          // è¿™é‡Œåº”è¯¥è®°å½•ä¸‹æ¥ï¼Œç›´åˆ°ä¸‹ä¸€æ¬¡epollé€šçŸ¥å¯ä»¥å†™æ‰å†™ todo 2019å¹´3æœˆ17æ—¥
+          // 22ç‚¹55åˆ†
+          return WriteContentResult::Move_to_Inactive;
+        } else {
+          Log(logger, Logger::LOG_WARN, "error when write");
+          return WriteContentResult::DeleteConnection;
+        }
+      } else {
+        // å¼€å§‹ä¿®æ”¹Metaæ•°æ®å¹¶ä¸”ç§»é™¤å†™å®Œçš„Meta
+        auto index = toWriteDeque.begin();
+        while (size > 0) {
+          if (index->toWriteLen > 0) {
+            if (size >= index->toWriteLen) {
+              size -= index->toWriteLen;
+              toWriteDeque.pop_front();
+              index = toWriteDeque.begin();
+            } else {
+              index->toWriteLen -= size;
+              size = 0;
+            }
+          } else {
+            // ä¸åº”è¯¥æœ‰é—®é¢˜çš„
+            Log(logger, Logger::LOG_ERROR, "should not run here");
+            exit(-1);
+          }
+        }
+      }
+      if (toWriteDeque.size() == 0) {
+        if (closeWhenWriteFinish.find(fd) != closeWhenWriteFinish.end()) {
+          // closeConnection(fd);
+          return WriteContentResult::DeleteConnection;
+        }
+      }
+      return WriteContentResult::OK;
+    }
+  }
 
-	void daemonRun()
-	{
-		struct epoll_event *toHandleEvents;
-		toHandleEvents = new struct epoll_event[1024];
-		assert(toHandleEvents);
-		for (; ;)
-		{
-			int epollRet = -1;
-			if (toWriteContents.empty())	// Ã»ÓĞĞèÒªĞ´µÄ£¬×èÈûµÈ´ı
-			{
-				epollRet = epoll_wait(epollFd, toHandleEvents, 1024, -1);
-			}
-			else
-			{
-				epollRet = epoll_wait(epollFd, toHandleEvents, 1024, 0);	// Á¢¿Ì·µ»Ø£¬ÓÃÓÚwrite
-			}
-			if (epollRet < 0)
-			{
-				recordError(__FILE__, __LINE__);
-				Log(logger, Logger::LOG_ERROR, errorString);
-			}
-			else
-			{
-				for (int i = 0; i < epollRet; ++i)
-				{
-					printEvent(toHandleEvents[i].data.fd, toHandleEvents[i].events);
-					if (toHandleEvents[i].data.fd == serverFd)	// ¼àÌıµÄserverFd
-					{
-						if (toHandleEvents[i].events & EPOLLIN)
-						{
-							if (!acceptNewConnection())
-							{
-								recordError(__FILE__, __LINE__);
-								Log(logger, Logger::LOG_ERROR, errorString);
-							}
-						}
-					}
-					else if (toHandleEvents[i].data.fd == pipeFds[0])	// µ÷ÓÃÕßÍ¨Öª¹ÜµÀfd
-					{
-						if (toHandleEvents[i].events & EPOLLIN)
-						{
-							handleNotify();
-						}
-					}
-					else	// ´¦Àí¿Í»§¶ËµÄÁ¬½Ó
-					{
-						int fd = toHandleEvents[i].data.fd;
-						if (connections.find(fd) == connections.end())
-						{
-							Log(logger, Logger::LOG_ERROR, "fd not seen before");
-							continue;
-						}
-						if (toHandleEvents[i].events & EPOLLIN || toHandleEvents[i].events & EPOLLHUP)
-						{
-							char *buffer = nullptr;
-							buffer = new char[BUFFER_SIZE];
-							assert(buffer);
-							ssize_t number = -1;
-							while ((number = read(fd, buffer, BUFFER_SIZE)) > 0)
-							{
-								if (onReadHandler)
-								{
-									auto c = connections[fd];
-									onReadHandler(&(connections[fd]), buffer, number, data);
-								}
-							}
-							if (number < 0)
-							{
-								if (errno == EAGAIN)
-								{
-
-								}
-								else
-								{
-									recordError(__FILE__, __LINE__);
-									Log(logger, Logger::LOG_ERROR, errorString);
-								}
-							}
-							else if (number == 0) // ¶Ô¶Ë¹Ø±ÕÁËÁ¬½Ó£¬Í¨Öªµ÷ÓÃÕß
-							{
-								// closeConnection(fd);
-								if (onPeerShutdownHandler)
-								{
-									onPeerShutdownHandler(&(connections[fd]), data);
-								}
-								// É¾³ıwrite¶ÓÁĞÖĞµÄÊı¾İ
-								toWriteContents.erase(fd);
-								inActiveWriteContents.erase(fd);
-							}
-							delete[] buffer;
-						}
-						else if (toHandleEvents[i].events & EPOLLOUT)
-						{
-							auto index = inActiveWriteContents.find(fd);
-							if (index != inActiveWriteContents.end())
-							{
-								toWriteContents.insert(*index);
-								inActiveWriteContents.erase(index);
-								onCanWriteHandler(&connections[fd], data);
-							}
-						}
-					}
-				}
-				// ´¦Àíwrite
-				for (auto index = toWriteContents.begin(); index != toWriteContents.end();)
-				{
-					WriteContentResult result = writeContent(index->first);
-					if (result == WriteContentResult::DeleteConnection)
-					{
-						// ¹Ø±ÕÁ¬½Ó
-						closeConnection(index->first);
-						// É¾³ıÒªĞ´µÄÊı¾İ
-						index = toWriteContents.erase(index);
-					}
-					else if (result == WriteContentResult::Move_to_Inactive)
-					{
-						inActiveWriteContents.insert(*index);
-						index = toWriteContents.erase(index);
-					}
-					else if (result == WriteContentResult::OK)
-					{
-						if (closeWhenWriteFinish.find(index->first) == closeWhenWriteFinish.cend())
-						{
-							if (onCanWriteHandler)
-							{
-								onCanWriteHandler(&(connections[index->first]), data);
-							}
-						}
-						if (index->second.size() == 0)
-						{
-							index = toWriteContents.erase(index);
-						}
-						else
-						{
-							++index;
-						}
-					}
-				}
-			}
-		}
-	}
-	void handleNotify()
-	{
-		for (; ;)
-		{
-			char commandStr[1];
-			int ret = -1;
-			if ((ret = read(pipeFds[0], commandStr, 1)) != 1)
-			{
-				if (ret == -1)
-				{
-					if (errno == EAGAIN)
-					{
-						
-					}
-					else
-					{
-						recordError(__FILE__, __LINE__);
-					}
-				}
-				break;
-			}
-			else
-			{
-				handleSpecifyNotify(commandStr[0]);
-			}
-		}
-	}
-	bool handleSpecifyNotify(char command)
-	{
-		switch (command)
-		{
-			case 'w':	// ÓĞĞÂµÄĞ´ÇëÇó
-			{
-				AutoMutex m(mutex);
-				//toWriteContents.insert(toWriteContents.end(), toWriteTempStorage)
-				for (auto c : toWriteTempStorage)
-				{
-					if (connections.find(c.first) == connections.end())
-						continue;
-					if (inActiveWriteContents.find(c.first) == inActiveWriteContents.end())	// ²»ÔÚ·Ç»î¶¯Á¬½ÓÖĞ
-					{
-						auto &writeDeque = toWriteContents[c.first];
-						writeDeque.push_back(c.second);
-					}
-					else
-					{
-						auto &writeDeque = inActiveWriteContents[c.first];
-						writeDeque.push_back(c.second);
-					}
-				}
-				toWriteTempStorage.clear();
-			}
-			break;
-			case 'c':	// ÓĞ¸Ä±äEpoll×´Ì¬µÄÇëÇó
-			{
-				AutoMutex m(mutex);
-				for (auto c : changesTempStorage)
-				{
-					/*if (c.second == EpollChangeOperation::ADD_WRITE)
-					{
-						addToWrite(c.first);
-					}*/
-					if (c.second == EpollChangeOperation::CLOSE_IF_NO_WRITE)
-					{
-						closeWhenWriteFinish.insert(c.first);
-					}
-					else if (c.second == EpollChangeOperation::CLOSE_IT)	// µ÷ÓÃÕßÒªÇóÁ¢¿Ì¹Ø±ÕÁ¬½Ó
-					{
-						closeConnection(c.first);
-					}
-				}
-				changesTempStorage.clear();
-			}
-			break;
-		}
-		return true;
-	}
-	bool writePipeToNotify(char command)
-	{
-		char commandStr[1];
-		commandStr[0] = command;
-		int ret = -1;
-		if ((ret = write(pipeFds[1], commandStr, 1)) != 1)
-		{
-			recordError(__FILE__, __LINE__);
-			return false;
-		}
-		else
-		{
-			return true;
-		}
-	}
-	bool isVaildConnection(int fd)
-	{
-		return connections.find(fd) != connections.end();
-	}
-	
+  void daemonRun() {
+    struct epoll_event *toHandleEvents;
+    toHandleEvents = new struct epoll_event[1024];
+    assert(toHandleEvents);
+    for (;;) {
+      int epollRet = -1;
+      if (toWriteContents.empty()) {
+        // æ²¡æœ‰éœ€è¦å†™çš„ï¼Œé˜»å¡ç­‰å¾…
+        epollRet = epoll_wait(epollFd, toHandleEvents, 1024, -1);
+      } else {
+        epollRet = epoll_wait(epollFd, toHandleEvents, 1024,
+                              0);  // ç«‹åˆ»è¿”å›ï¼Œç”¨äºwrite
+      }
+      if (epollRet < 0) {
+        recordError(__FILE__, __LINE__);
+        Log(logger, Logger::LOG_ERROR, errorString);
+      } else {
+        for (int i = 0; i < epollRet; ++i) {
+          printEvent(toHandleEvents[i].data.fd, toHandleEvents[i].events);
+          // ç›‘å¬çš„serverFd
+          if (toHandleEvents[i].data.fd == serverFd) {
+            if (toHandleEvents[i].events & EPOLLIN) {
+              if (!acceptNewConnection()) {
+                recordError(__FILE__, __LINE__);
+                Log(logger, Logger::LOG_ERROR, errorString);
+              }
+            }
+          } else if (toHandleEvents[i].data.fd == pipeFds[0]) {
+            // è°ƒç”¨è€…é€šçŸ¥ç®¡é“fd
+            if (toHandleEvents[i].events & EPOLLIN) {
+              handleNotify();
+            }
+          } else {
+            // å¤„ç†å®¢æˆ·ç«¯çš„è¿æ¥
+            int fd = toHandleEvents[i].data.fd;
+            if (connections.find(fd) == connections.end()) {
+              Log(logger, Logger::LOG_ERROR, "fd not seen before");
+              continue;
+            }
+            if (toHandleEvents[i].events & EPOLLIN ||
+                toHandleEvents[i].events & EPOLLHUP) {
+              char *buffer = nullptr;
+              buffer = new char[BUFFER_SIZE];
+              assert(buffer);
+              ssize_t number = -1;
+              while ((number = read(fd, buffer, BUFFER_SIZE)) > 0) {
+                if (onReadHandler) {
+                  auto c = connections[fd];
+                  onReadHandler(&(connections[fd]), buffer, number, data);
+                }
+              }
+              if (number < 0) {
+                if (errno == EAGAIN) {
+                } else {
+                  recordError(__FILE__, __LINE__);
+                  Log(logger, Logger::LOG_ERROR, errorString);
+                }
+              } else if (number == 0) {
+                // å¯¹ç«¯å…³é—­äº†è¿æ¥ï¼Œé€šçŸ¥è°ƒç”¨è€…
+                // closeConnection(fd);
+                if (onPeerShutdownHandler) {
+                  onPeerShutdownHandler(&(connections[fd]), data);
+                }
+                // åˆ é™¤writeé˜Ÿåˆ—ä¸­çš„æ•°æ®
+                toWriteContents.erase(fd);
+                inActiveWriteContents.erase(fd);
+              }
+              delete[] buffer;
+            } else if (toHandleEvents[i].events & EPOLLOUT) {
+              auto index = inActiveWriteContents.find(fd);
+              if (index != inActiveWriteContents.end()) {
+                toWriteContents.insert(*index);
+                inActiveWriteContents.erase(index);
+                onCanWriteHandler(&connections[fd], data);
+              }
+            }
+          }
+        }
+        // å¤„ç†write
+        for (auto index = toWriteContents.begin();
+             index != toWriteContents.end();) {
+          WriteContentResult result = writeContent(index->first);
+          if (result == WriteContentResult::DeleteConnection) {
+            // å…³é—­è¿æ¥
+            closeConnection(index->first);
+            // åˆ é™¤è¦å†™çš„æ•°æ®
+            index = toWriteContents.erase(index);
+          } else if (result == WriteContentResult::Move_to_Inactive) {
+            inActiveWriteContents.insert(*index);
+            index = toWriteContents.erase(index);
+          } else if (result == WriteContentResult::OK) {
+            if (closeWhenWriteFinish.find(index->first) ==
+                closeWhenWriteFinish.cend()) {
+              if (onCanWriteHandler) {
+                onCanWriteHandler(&(connections[index->first]), data);
+              }
+            }
+            if (index->second.size() == 0) {
+              index = toWriteContents.erase(index);
+            } else {
+              ++index;
+            }
+          }
+        }
+      }
+    }
+  }
+  void handleNotify() {
+    for (;;) {
+      char commandStr[1];
+      int ret = -1;
+      if ((ret = read(pipeFds[0], commandStr, 1)) != 1) {
+        if (ret == -1) {
+          if (errno == EAGAIN) {
+          } else {
+            recordError(__FILE__, __LINE__);
+          }
+        }
+        break;
+      } else {
+        handleSpecifyNotify(commandStr[0]);
+      }
+    }
+  }
+  bool handleSpecifyNotify(char command) {
+    switch (command) {
+      case 'w':  // æœ‰æ–°çš„å†™è¯·æ±‚
+      {
+        AutoMutex m(mutex);
+        // toWriteContents.insert(toWriteContents.end(), toWriteTempStorage)
+        for (auto c : toWriteTempStorage) {
+          if (connections.find(c.first) == connections.end()) continue;
+          if (inActiveWriteContents.find(c.first) ==
+              inActiveWriteContents.end()) {
+            // ä¸åœ¨éæ´»åŠ¨è¿æ¥ä¸­
+            auto &writeDeque = toWriteContents[c.first];
+            writeDeque.push_back(c.second);
+          } else {
+            auto &writeDeque = inActiveWriteContents[c.first];
+            writeDeque.push_back(c.second);
+          }
+        }
+        toWriteTempStorage.clear();
+      } break;
+      case 'c':  // æœ‰æ”¹å˜EpollçŠ¶æ€çš„è¯·æ±‚
+      {
+        AutoMutex m(mutex);
+        for (auto c : changesTempStorage) {
+          /*if (c.second == EpollChangeOperation::ADD_WRITE)
+          {
+                  addToWrite(c.first);
+          }*/
+          if (c.second == EpollChangeOperation::CLOSE_IF_NO_WRITE) {
+            closeWhenWriteFinish.insert(c.first);
+          } else if (c.second == EpollChangeOperation::CLOSE_IT) {
+            // è°ƒç”¨è€…è¦æ±‚ç«‹åˆ»å…³é—­è¿æ¥
+            closeConnection(c.first);
+          }
+        }
+        changesTempStorage.clear();
+      } break;
+    }
+    return true;
+  }
+  bool writePipeToNotify(char command) {
+    char commandStr[1];
+    commandStr[0] = command;
+    int ret = -1;
+    if ((ret = write(pipeFds[1], commandStr, 1)) != 1) {
+      recordError(__FILE__, __LINE__);
+      return false;
+    } else {
+      return true;
+    }
+  }
+  bool isVaildConnection(int fd) {
+    return connections.find(fd) != connections.end();
+  }
 };
-
