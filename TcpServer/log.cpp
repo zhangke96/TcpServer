@@ -1,11 +1,12 @@
 // Copyright 2019 zhangke
 #include "TcpServer/log.h"
+#include <cstdint>
 
 void Logger::printLog(LogLevel level, const std::string &msg,
                       const char *filename, int linenumber) {
   // 输出格式为: time thread_id LEVEL msg filename linenumber
-  // 当设定的日志等级比想要输出的等级高，不会输出日志
-  if (displayLevel >= level) return;
+  // 当设定的日志等级比想要输出的等级低，不会输出日志
+  if (level < displayLevel) return;
   struct timeval nowtime;
   gettimeofday(&nowtime, nullptr);
   struct tm timestruct;
