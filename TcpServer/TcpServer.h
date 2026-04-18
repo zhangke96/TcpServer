@@ -146,6 +146,7 @@ class TcpServer {
     } else {
       onPeerShutdownHandler = handler;
     }
+    return true;
   }
   bool onCanWrite(OnCanWriteHandle_t handler) {
     if (onCanWriteHandler) {
@@ -153,6 +154,7 @@ class TcpServer {
     } else {
       onCanWriteHandler = handler;
     }
+    return true;
   }
   bool start() {
     if (!readyForStart) {
@@ -337,7 +339,7 @@ class TcpServer {
         }
       }
     }
-    if (errno = EAGAIN) {
+    if (errno == EAGAIN) {
       return true;
     } else {
       return false;
